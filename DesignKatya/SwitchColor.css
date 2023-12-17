@@ -1,0 +1,10 @@
+$(document).ready(function() {
+    $('.pups').hover(
+      function() {
+      $(this).html('I love duckies');
+        $(this).css("background-color", "#006699");
+    }, function() {
+      $(this).html('I love doggies');
+      $(this).css("background-color", "#ea4221");
+    });
+  });

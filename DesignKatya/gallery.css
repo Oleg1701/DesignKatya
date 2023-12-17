@@ -1,0 +1,1594 @@
+Илюша, [17.12.2023 17:06]
+/
+       * Disable transition.
+       *
+       * @return {Void}
+       */
+      disable: function disable() {
+        disabled = true;
+
+        this.set();
+      }
+    };
+
+    define(Transition, 'duration', {
+      /
+       * Gets duration of the transition based
+       * on currently running animation type.
+       *
+       * @return {Number}
+       */
+      get: function get() {
+        var settings = Glide.settings;
+
+        if (Glide.isType('slider') && Components.Run.offset) {
+          return settings.rewindDuration;
+        }
+
+        return settings.animationDuration;
+      }
+    });
+
+    /
+     * Set transition `style` value:
+     * - on each moving, because it may be cleared by offset move
+     */
+    Events.on('move', function () {
+      Transition.set();
+    });
+
+    /
+     * Disable transition:
+     * - before initial build to avoid transitioning from 0 to startAt index
+     * - while resizing window and recalculating dimentions
+     * - on jumping from offset transition at start and end edges in carousel type
+     */
+    Events.on(['build.before', 'resize', 'translate.jump'], function () {
+      Transition.disable();
+    });
+
+    /
+     * Enable transition:
+     * - on each running, because it may be disabled by offset move
+     */
+    Events.on('run', function () {
+      Transition.enable();
+    });
+
+    /
+     * Remove transition:
+     * - on destroying to bring markup to its inital state
+     */
+    Events.on('destroy', function () {
+      Transition.remove();
+    });
+
+    return Transition;
+  }
+
+  /
+   * Test via a getter in the options object to see
+   * if the passive property is accessed.
+   *
+   * @see https://github.com/WICG/EventListenerOptions/blob/gh-pages/explainer.md#feature-detection
+   */
+
+  var supportsPassive = false;
+
+  try {
+    var opts = Object.defineProperty({}, 'passive', {
+      get: function get() {
+        supportsPassive = true;
+      }
+    });
+
+    window.addEventListener('testPassive', null, opts);
+    window.removeEventListener('testPassive', null, opts);
+  } catch (e) {}
+
+  var supportsPassive$1 = supportsPassive;
+
+  var START_EVENTS = ['touchstart', 'mousedown'];
+  var MOVE_EVENTS = ['touchmove', 'mousemove'];
+  var END_EVENTS = ['touchend', 'touchcancel', 'mouseup', 'mouseleave'];
+  var MOUSE_EVENTS = ['mousedown', 'mousemove', 'mouseup', 'mouseleave'];
+
+  function Swipe (Glide, Components, Events) {
+    /
+     * Instance of the binder for DOM Events.
+     *
+     * @type {EventsBinder}
+     */
+    var Binder = new EventsBinder();
+
+    var swipeSin = 0;
+    var swipeStartX = 0;
+    var swipeStartY = 0;
+    var disabled = false;
+    var capture = supportsPassive$1 ? { passive: true } : false;
+
+    var Swipe = {
+      /
+       * Initializes swipe bindings.
+       *
+       * @return {Void}
+       */
+      mount: function mount() {
+        this.bindSwipeStart();
+      },
+
+
+      /
+       * Handler for swipestart event. Calculates entry points of the user's tap.
+       *
+       * @param {Object} event
+       * @return {Void}
+       */
+      start: function start(event) {
+        if (!disabled && !Glide.disabled) {
+          this.disable();
+
+          var swipe = this.touches(event);
+
+          swipeSin = null;
+          swipeStartX = toInt(swipe.pageX);
+          swipeStartY = toInt(swipe.pageY);
+
+          this.bindSwipeMove();
+          this.bindSwipeEnd();
+
+          Events.emit('swipe.start');
+        }
+      },
+
+Илюша, [17.12.2023 17:06]
+/
+       * Handler for `swipemove` event. Calculates user's tap angle and distance.
+       *
+       * @param {Object} event
+       */
+      move: function move(event) {
+        if (!Glide.disabled) {
+          var _Glide$settings = Glide.settings,
+              touchAngle = _Glide$settings.touchAngle,
+              touchRatio = _Glide$settings.touchRatio,
+              classes = _Glide$settings.classes;
+
+
+          var swipe = this.touches(event);
+
+          var subExSx = toInt(swipe.pageX) - swipeStartX;
+          var subEySy = toInt(swipe.pageY) - swipeStartY;
+          var powEX = Math.abs(subExSx << 2);
+          var powEY = Math.abs(subEySy << 2);
+          var swipeHypotenuse = Math.sqrt(powEX + powEY);
+          var swipeCathetus = Math.sqrt(powEY);
+
+          swipeSin = Math.asin(swipeCathetus / swipeHypotenuse);
+
+          if (swipeSin * 180 / Math.PI < touchAngle) {
+            event.stopPropagation();
+
+            Components.Move.make(subExSx * toFloat(touchRatio));
+
+            Components.Html.root.classList.add(classes.dragging);
+
+            Events.emit('swipe.move');
+          } else {
+            return false;
+          }
+        }
+      },
+
+
+      /
+       * Handler for swipeend event. Finitializes user's tap and decides about glide move.
+       *
+       * @param {Object} event
+       * @return {Void}
+       */
+      end: function end(event) {
+        if (!Glide.disabled) {
+          var settings = Glide.settings;
+
+          var swipe = this.touches(event);
+          var threshold = this.threshold(event);
+
+          var swipeDistance = swipe.pageX - swipeStartX;
+          var swipeDeg = swipeSin * 180 / Math.PI;
+          var steps = Math.round(swipeDistance / Components.Sizes.slideWidth);
+
+          this.enable();
+
+          if (swipeDistance > threshold && swipeDeg < settings.touchAngle) {
+            // While swipe is positive and greater than threshold move backward.
+            if (settings.perTouch) {
+              steps = Math.min(steps, toInt(settings.perTouch));
+            }
+
+            if (Components.Direction.is('rtl')) {
+              steps = -steps;
+            }
+
+            Components.Run.make(Components.Direction.resolve('<' + steps));
+          } else if (swipeDistance < -threshold && swipeDeg < settings.touchAngle) {
+            // While swipe is negative and lower than negative threshold move forward.
+            if (settings.perTouch) {
+              steps = Math.max(steps, -toInt(settings.perTouch));
+            }
+
+            if (Components.Direction.is('rtl')) {
+              steps = -steps;
+            }
+
+            Components.Run.make(Components.Direction.resolve('>' + steps));
+          } else {
+            // While swipe don't reach distance apply previous transform.
+            Components.Move.make();
+          }
+
+          Components.Html.root.classList.remove(settings.classes.dragging);
+
+          this.unbindSwipeMove();
+          this.unbindSwipeEnd();
+
+          Events.emit('swipe.end');
+        }
+      },
+
+
+      /
+       * Binds swipe's starting event.
+       *
+       * @return {Void}
+       */
+      bindSwipeStart: function bindSwipeStart() {
+        var _this = this;
+
+        var settings = Glide.settings;
+
+        if (settings.swipeThreshold) {
+          Binder.on(START_EVENTS[0], Components.Html.wrapper, function (event) {
+            _this.start(event);
+          }, capture);
+        }
+
+        if (settings.dragThreshold) {
+          Binder.on(START_EVENTS[1], Components.Html.wrapper, function (event) {
+            _this.start(event);
+          }, capture);
+        }
+      },
+
+
+      /
+       * Unbinds swipe's starting event.
+       *
+       * @return {Void}
+       */
+      unbindSwipeStart: function unbindSwipeStart() {
+        Binder.off(START_EVENTS[0], Components.Html.wrapper, capture);
+        Binder.off(START_EVENTS[1], Components.Html.wrapper, capture);
+      },
+
+Илюша, [17.12.2023 17:06]
+/
+       * Binds swipe's moving event.
+       *
+       * @return {Void}
+       */
+      bindSwipeMove: function bindSwipeMove() {
+        var _this2 = this;
+
+        Binder.on(MOVE_EVENTS, Components.Html.wrapper, throttle(function (event) {
+          _this2.move(event);
+        }, Glide.settings.throttle), capture);
+      },
+
+
+      /
+       * Unbinds swipe's moving event.
+       *
+       * @return {Void}
+       */
+      unbindSwipeMove: function unbindSwipeMove() {
+        Binder.off(MOVE_EVENTS, Components.Html.wrapper, capture);
+      },
+
+
+      /
+       * Binds swipe's ending event.
+       *
+       * @return {Void}
+       */
+      bindSwipeEnd: function bindSwipeEnd() {
+        var _this3 = this;
+
+        Binder.on(END_EVENTS, Components.Html.wrapper, function (event) {
+          _this3.end(event);
+        });
+      },
+
+
+      /
+       * Unbinds swipe's ending event.
+       *
+       * @return {Void}
+       */
+      unbindSwipeEnd: function unbindSwipeEnd() {
+        Binder.off(END_EVENTS, Components.Html.wrapper);
+      },
+
+
+      /
+       * Normalizes event touches points accorting to different types.
+       *
+       * @param {Object} event
+       */
+      touches: function touches(event) {
+        if (MOUSE_EVENTS.indexOf(event.type) > -1) {
+          return event;
+        }
+
+        return event.touches[0] || event.changedTouches[0];
+      },
+
+
+      /
+       * Gets value of minimum swipe distance settings based on event type.
+       *
+       * @return {Number}
+       */
+      threshold: function threshold(event) {
+        var settings = Glide.settings;
+
+        if (MOUSE_EVENTS.indexOf(event.type) > -1) {
+          return settings.dragThreshold;
+        }
+
+        return settings.swipeThreshold;
+      },
+
+
+      /
+       * Enables swipe event.
+       *
+       * @return {self}
+       */
+      enable: function enable() {
+        disabled = false;
+
+        Components.Transition.enable();
+
+        return this;
+      },
+
+
+      /
+       * Disables swipe event.
+       *
+       * @return {self}
+       */
+      disable: function disable() {
+        disabled = true;
+
+        Components.Transition.disable();
+
+        return this;
+      }
+    };
+
+    /
+     * Add component class:
+     * - after initial building
+     */
+    Events.on('build.after', function () {
+      Components.Html.root.classList.add(Glide.settings.classes.swipeable);
+    });
+
+    /
+     * Remove swiping bindings:
+     * - on destroying, to remove added EventListeners
+     */
+    Events.on('destroy', function () {
+      Swipe.unbindSwipeStart();
+      Swipe.unbindSwipeMove();
+      Swipe.unbindSwipeEnd();
+      Binder.destroy();
+    });
+
+    return Swipe;
+  }
+
+  function Images (Glide, Components, Events) {
+    /
+     * Instance of the binder for DOM Events.
+     *
+     * @type {EventsBinder}
+     */
+    var Binder = new EventsBinder();
+
+    var Images = {
+      /
+       * Binds listener to glide wrapper.
+       *
+       * @return {Void}
+       */
+      mount: function mount() {
+        this.bind();
+      },
+
+
+      /
+       * Binds `dragstart` event on wrapper to prevent dragging images.
+       *
+       * @return {Void}
+       */
+      bind: function bind() {
+        Binder.on('dragstart', Components.Html.wrapper, this.dragstart);
+      },
+
+
+      /
+       * Unbinds dragstart event on wrapper.
+       *
+       * @return {Void}
+       */
+      unbind: function unbind() {
+        Binder.off('dragstart', Components.Html.wrapper);
+      },
+
+
+      /
+       * Event handler. Prevents dragging.
+       *
+       * @return {Void}
+       */
+      dragstart: function dragstart(event) {
+        event.preventDefault();
+      }
+    };
+
+    /
+     * Remove bindings from images:
+     * - on destroying, to remove added EventListeners
+     */
+    Events.on('destroy', function () {
+      Images.unbind();
+      Binder.destroy();
+    });
+
+    return Images;
+  }
+
+Илюша, [17.12.2023 17:06]
+function Anchors (Glide, Components, Events) {
+    /
+     * Instance of the binder for DOM Events.
+     *
+     * @type {EventsBinder}
+     */
+    var Binder = new EventsBinder();
+
+    /
+     * Holds detaching status of anchors.
+     * Prevents detaching of already detached anchors.
+     *
+     * @private
+     * @type {Boolean}
+     */
+    var detached = false;
+
+    /
+     * Holds preventing status of anchors.
+     * If `true` redirection after click will be disabled.
+     *
+     * @private
+     * @type {Boolean}
+     */
+    var prevented = false;
+
+    var Anchors = {
+      /
+       * Setups a initial state of anchors component.
+       *
+       * @returns {Void}
+       */
+      mount: function mount() {
+        /
+         * Holds collection of anchors elements.
+         *
+         * @private
+         * @type {HTMLCollection}
+         */
+        this._a = Components.Html.wrapper.querySelectorAll('a');
+
+        this.bind();
+      },
+
+
+      /
+       * Binds events to anchors inside a track.
+       *
+       * @return {Void}
+       */
+      bind: function bind() {
+        Binder.on('click', Components.Html.wrapper, this.click);
+      },
+
+
+      /
+       * Unbinds events attached to anchors inside a track.
+       *
+       * @return {Void}
+       */
+      unbind: function unbind() {
+        Binder.off('click', Components.Html.wrapper);
+      },
+
+
+      /
+       * Handler for click event. Prevents clicks when glide is in prevent status.
+       *
+       * @param  {Object} event
+       * @return {Void}
+       */
+      click: function click(event) {
+        if (prevented) {
+          event.stopPropagation();
+          event.preventDefault();
+        }
+      },
+
+
+      /
+       * Detaches anchors click event inside glide.
+       *
+       * @return {self}
+       */
+      detach: function detach() {
+        prevented = true;
+
+        if (!detached) {
+          for (var i = 0; i < this.items.length; i++) {
+            this.items[i].draggable = false;
+
+            this.items[i].setAttribute('data-href', this.items[i].getAttribute('href'));
+
+            this.items[i].removeAttribute('href');
+          }
+
+          detached = true;
+        }
+
+        return this;
+      },
+
+
+      /
+       * Attaches anchors click events inside glide.
+       *
+       * @return {self}
+       */
+      attach: function attach() {
+        prevented = false;
+
+        if (detached) {
+          for (var i = 0; i < this.items.length; i++) {
+            this.items[i].draggable = true;
+
+            this.items[i].setAttribute('href', this.items[i].getAttribute('data-href'));
+          }
+
+          detached = false;
+        }
+
+        return this;
+      }
+    };
+
+    define(Anchors, 'items', {
+      /
+       * Gets collection of the arrows HTML elements.
+       *
+       * @return {HTMLElement[]}
+       */
+      get: function get() {
+        return Anchors._a;
+      }
+    });
+
+    /
+     * Detach anchors inside slides:
+     * - on swiping, so they won't redirect to its href attributes
+     */
+    Events.on('swipe.move', function () {
+      Anchors.detach();
+    });
+
+    /
+     * Attach anchors inside slides:
+     * - after swiping and transitions ends, so they can redirect after click again
+     */
+    Events.on('swipe.end', function () {
+      Components.Transition.after(function () {
+        Anchors.attach();
+      });
+    });
+
+    /
+     * Unbind anchors inside slides:
+     * - on destroying, to bring anchors to its initial state
+     */
+    Events.on('destroy', function () {
+      Anchors.attach();
+      Anchors.unbind();
+      Binder.destroy();
+    });
+
+    return Anchors;
+  }
+
+  var NAV_SELECTOR = '[data-glide-el="controls[nav]"]';
+  var CONTROLS_SELECTOR = '[data-glide-el^="controls"]';
+
+Илюша, [17.12.2023 17:06]
+function Controls (Glide, Components, Events) {
+    /
+     * Instance of the binder for DOM Events.
+     *
+     * @type {EventsBinder}
+     */
+    var Binder = new EventsBinder();
+
+    var capture = supportsPassive$1 ? { passive: true } : false;
+
+    var Controls = {
+      /
+       * Inits arrows. Binds events listeners
+       * to the arrows HTML elements.
+       *
+       * @return {Void}
+       */
+      mount: function mount() {
+        /
+         * Collection of navigation HTML elements.
+         *
+         * @private
+         * @type {HTMLCollection}
+         */
+        this._n = Components.Html.root.querySelectorAll(NAV_SELECTOR);
+
+        /
+         * Collection of controls HTML elements.
+         *
+         * @private
+         * @type {HTMLCollection}
+         */
+        this._c = Components.Html.root.querySelectorAll(CONTROLS_SELECTOR);
+
+        this.addBindings();
+      },
+
+
+      /
+       * Sets active class to current slide.
+       *
+       * @return {Void}
+       */
+      setActive: function setActive() {
+        for (var i = 0; i < this._n.length; i++) {
+          this.addClass(this._n[i].children);
+        }
+      },
+
+
+      /
+       * Removes active class to current slide.
+       *
+       * @return {Void}
+       */
+      removeActive: function removeActive() {
+        for (var i = 0; i < this._n.length; i++) {
+          this.removeClass(this._n[i].children);
+        }
+      },
+
+
+      /
+       * Toggles active class on items inside navigation.
+       *
+       * @param  {HTMLElement} controls
+       * @return {Void}
+       */
+      addClass: function addClass(controls) {
+        var settings = Glide.settings;
+        var item = controls[Glide.index];
+
+        if (item) {
+          item.classList.add(settings.classes.activeNav);
+
+          siblings(item).forEach(function (sibling) {
+            sibling.classList.remove(settings.classes.activeNav);
+          });
+        }
+      },
+
+
+      /
+       * Removes active class from active control.
+       *
+       * @param  {HTMLElement} controls
+       * @return {Void}
+       */
+      removeClass: function removeClass(controls) {
+        var item = controls[Glide.index];
+
+        if (item) {
+          item.classList.remove(Glide.settings.classes.activeNav);
+        }
+      },
+
+
+      /
+       * Adds handles to the each group of controls.
+       *
+       * @return {Void}
+       */
+      addBindings: function addBindings() {
+        for (var i = 0; i < this._c.length; i++) {
+          this.bind(this._c[i].children);
+        }
+      },
+
+
+      /
+       * Removes handles from the each group of controls.
+       *
+       * @return {Void}
+       */
+      removeBindings: function removeBindings() {
+        for (var i = 0; i < this._c.length; i++) {
+          this.unbind(this._c[i].children);
+        }
+      },
+
+
+      /
+       * Binds events to arrows HTML elements.
+       *
+       * @param {HTMLCollection} elements
+       * @return {Void}
+       */
+      bind: function bind(elements) {
+        for (var i = 0; i < elements.length; i++) {
+          Binder.on('click', elements[i], this.click);
+          Binder.on('touchstart', elements[i], this.click, capture);
+        }
+      },
+
+
+      /
+       * Unbinds events binded to the arrows HTML elements.
+       *
+       * @param {HTMLCollection} elements
+       * @return {Void}
+       */
+      unbind: function unbind(elements) {
+        for (var i = 0; i < elements.length; i++) {
+          Binder.off(['click', 'touchstart'], elements[i]);
+        }
+      },
+
+Илюша, [17.12.2023 17:06]
+/
+       * Handles `click` event on the arrows HTML elements.
+       * Moves slider in driection precised in
+       * `data-glide-dir` attribute.
+       *
+       * @param {Object} event
+       * @return {Void}
+       */
+      click: function click(event) {
+        event.preventDefault();
+
+        Components.Run.make(Components.Direction.resolve(event.currentTarget.getAttribute('data-glide-dir')));
+      }
+    };
+
+    define(Controls, 'items', {
+      /
+       * Gets collection of the controls HTML elements.
+       *
+       * @return {HTMLElement[]}
+       */
+      get: function get() {
+        return Controls._c;
+      }
+    });
+
+    /
+     * Swap active class of current navigation item:
+     * - after mounting to set it to initial index
+     * - after each move to the new index
+     */
+    Events.on(['mount.after', 'move.after'], function () {
+      Controls.setActive();
+    });
+
+    /
+     * Remove bindings and HTML Classes:
+     * - on destroying, to bring markup to its initial state
+     */
+    Events.on('destroy', function () {
+      Controls.removeBindings();
+      Controls.removeActive();
+      Binder.destroy();
+    });
+
+    return Controls;
+  }
+
+  function Keyboard (Glide, Components, Events) {
+    /
+     * Instance of the binder for DOM Events.
+     *
+     * @type {EventsBinder}
+     */
+    var Binder = new EventsBinder();
+
+    var Keyboard = {
+      /
+       * Binds keyboard events on component mount.
+       *
+       * @return {Void}
+       */
+      mount: function mount() {
+        if (Glide.settings.keyboard) {
+          this.bind();
+        }
+      },
+
+
+      /
+       * Adds keyboard press events.
+       *
+       * @return {Void}
+       */
+      bind: function bind() {
+        Binder.on('keyup', document, this.press);
+      },
+
+
+      /
+       * Removes keyboard press events.
+       *
+       * @return {Void}
+       */
+      unbind: function unbind() {
+        Binder.off('keyup', document);
+      },
+
+
+      /
+       * Handles keyboard's arrows press and moving glide foward and backward.
+       *
+       * @param  {Object} event
+       * @return {Void}
+       */
+      press: function press(event) {
+        if (event.keyCode === 39) {
+          Components.Run.make(Components.Direction.resolve('>'));
+        }
+
+        if (event.keyCode === 37) {
+          Components.Run.make(Components.Direction.resolve('<'));
+        }
+      }
+    };
+
+    /
+     * Remove bindings from keyboard:
+     * - on destroying to remove added events
+     * - on updating to remove events before remounting
+     */
+    Events.on(['destroy', 'update'], function () {
+      Keyboard.unbind();
+    });
+
+    /
+     * Remount component
+     * - on updating to reflect potential changes in settings
+     */
+    Events.on('update', function () {
+      Keyboard.mount();
+    });
+
+    /
+     * Destroy binder:
+     * - on destroying to remove listeners
+     */
+    Events.on('destroy', function () {
+      Binder.destroy();
+    });
+
+    return Keyboard;
+  }
+
+  function Autoplay (Glide, Components, Events) {
+    /
+     * Instance of the binder for DOM Events.
+     *
+     * @type {EventsBinder}
+     */
+    var Binder = new EventsBinder();
+
+    var Autoplay = {
+      /
+       * Initializes autoplaying and events.
+       *
+       * @return {Void}
+       */
+      mount: function mount() {
+        this.start();
+
+        if (Glide.settings.hoverpause) {
+          this.bind();
+        }
+      },
+
+Илюша, [17.12.2023 17:06]
+/
+       * Starts autoplaying in configured interval.
+       *
+       * @param {Boolean|Number} force Run autoplaying with passed interval regardless of `autoplay` settings
+       * @return {Void}
+       */
+      start: function start() {
+        var _this = this;
+
+        if (Glide.settings.autoplay) {
+          if (isUndefined(this._i)) {
+            this._i = setInterval(function () {
+              _this.stop();
+
+              Components.Run.make('>');
+
+              _this.start();
+            }, this.time);
+          }
+        }
+      },
+
+
+      /
+       * Stops autorunning of the glide.
+       *
+       * @return {Void}
+       */
+      stop: function stop() {
+        this._i = clearInterval(this._i);
+      },
+
+
+      /
+       * Stops autoplaying while mouse is over glide's area.
+       *
+       * @return {Void}
+       */
+      bind: function bind() {
+        var _this2 = this;
+
+        Binder.on('mouseover', Components.Html.root, function () {
+          _this2.stop();
+        });
+
+        Binder.on('mouseout', Components.Html.root, function () {
+          _this2.start();
+        });
+      },
+
+
+      /
+       * Unbind mouseover events.
+       *
+       * @returns {Void}
+       */
+      unbind: function unbind() {
+        Binder.off(['mouseover', 'mouseout'], Components.Html.root);
+      }
+    };
+
+    define(Autoplay, 'time', {
+      /
+       * Gets time period value for the autoplay interval. Prioritizes
+       * times in `data-glide-autoplay` attrubutes over options.
+       *
+       * @return {Number}
+       */
+      get: function get() {
+        var autoplay = Components.Html.slides[Glide.index].getAttribute('data-glide-autoplay');
+
+        if (autoplay) {
+          return toInt(autoplay);
+        }
+
+        return toInt(Glide.settings.autoplay);
+      }
+    });
+
+    /
+     * Stop autoplaying and unbind events:
+     * - on destroying, to clear defined interval
+     * - on updating via API to reset interval that may changed
+     */
+    Events.on(['destroy', 'update'], function () {
+      Autoplay.unbind();
+    });
+
+    /
+     * Stop autoplaying:
+     * - before each run, to restart autoplaying
+     * - on pausing via API
+     * - on destroying, to clear defined interval
+     * - while starting a swipe
+     * - on updating via API to reset interval that may changed
+     */
+    Events.on(['run.before', 'pause', 'destroy', 'swipe.start', 'update'], function () {
+      Autoplay.stop();
+    });
+
+    /
+     * Start autoplaying:
+     * - after each run, to restart autoplaying
+     * - on playing via API
+     * - while ending a swipe
+     */
+    Events.on(['run.after', 'play', 'swipe.end'], function () {
+      Autoplay.start();
+    });
+
+    /
+     * Remount autoplaying:
+     * - on updating via API to reset interval that may changed
+     */
+    Events.on('update', function () {
+      Autoplay.mount();
+    });
+
+    /
+     * Destroy a binder:
+     * - on destroying glide instance to clearup listeners
+     */
+    Events.on('destroy', function () {
+      Binder.destroy();
+    });
+
+    return Autoplay;
+  }
+
+  /
+   * Sorts keys of breakpoint object so they will be ordered from lower to bigger.
+   *
+   * @param {Object} points
+   * @returns {Object}
+   */
+  function sortBreakpoints(points) {
+    if (isObject(points)) {
+      return sortKeys(points);
+    } else {
+      warn('Breakpoints option must be an object');
+    }
+
+    return {};
+  }
+
+  function Breakpoints (Glide, Components, Events) {
+    /
+     * Instance of the binder for DOM Events.
+     *
+     * @type {EventsBinder}
+     */
+    var Binder = new EventsBinder();
+
+    /
+     * Holds reference to settings.
+     *
+     * @type {Object}
+     */
+    var settings = Glide.settings;
+
+    /
+     * Holds reference to breakpoints object in settings. Sorts breakpoints
+     * from smaller to larger. It is required in order to proper
+     * matching currently active breakpoint settings.
+     *
+     * @type {Object}
+     */
+    var points = sortBreakpoints(settings.breakpoints);
+/
+     * Cache initial settings before overwritting.
+     *
+     * @type {Object}
+     */
+    var defaults = _extends({}, settings);
+
+    var Breakpoints = {
+      /
+       * Matches settings for currectly matching media breakpoint.
+       *
+       * @param {Object} points
+       * @returns {Object}
+       */
+      match: function match(points) {
+        if (typeof window.matchMedia !== 'undefined') {
+          for (var point in points) {
+            if (points.hasOwnProperty(point)) {
+              if (window.matchMedia('(max-width: ' + point + 'px)').matches) {
+                return points[point];
+              }
+            }
+          }
+        }
+
+        return defaults;
+      }
+    };
+
+    /
+     * Overwrite instance settings with currently matching breakpoint settings.
+     * This happens right after component initialization.
+     */
+    _extends(settings, Breakpoints.match(points));
+
+    /
+     * Update glide with settings of matched brekpoint:
+     * - window resize to update slider
+     */
+    Binder.on('resize', window, throttle(function () {
+      Glide.settings = mergeOptions(settings, Breakpoints.match(points));
+    }, Glide.settings.throttle));
+
+    /
+     * Resort and update default settings:
+     * - on reinit via API, so breakpoint matching will be performed with options
+     */
+    Events.on('update', function () {
+      points = sortBreakpoints(points);
+
+      defaults = _extends({}, settings);
+    });
+
+    /
+     * Unbind resize listener:
+     * - on destroying, to bring markup to its initial state
+     */
+    Events.on('destroy', function () {
+      Binder.off('resize', window);
+    });
+
+    return Breakpoints;
+  }
+
+  var COMPONENTS = {
+    // Required
+    Html: Html,
+    Translate: Translate,
+    Transition: Transition,
+    Direction: Direction,
+    Peek: Peek,
+    Sizes: Sizes,
+    Gaps: Gaps,
+    Move: Move,
+    Clones: Clones,
+    Resize: Resize,
+    Build: Build,
+    Run: Run,
+
+    // Optional
+    Swipe: Swipe,
+    Images: Images,
+    Anchors: Anchors,
+    Controls: Controls,
+    Keyboard: Keyboard,
+    Autoplay: Autoplay,
+    Breakpoints: Breakpoints
+  };
+
+  var Glide$1 = function (_Core) {
+    inherits(Glide$$1, _Core);
+
+    function Glide$$1() {
+      classCallCheck(this, Glide$$1);
+      return possibleConstructorReturn(this, (Glide$$1.proto  Object.getPrototypeOf(Glide$$1)).apply(this, arguments));
+    }
+
+    createClass(Glide$$1, [{
+      key: 'mount',
+      value: function mount() {
+        var extensions = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : {};
+
+        return get(Glide$$1.prototype.__proto__  Object.getPrototypeOf(Glide$$1.prototype), 'mount', this).call(this, _extends({}, COMPONENTS, extensions));
+      }
+    }]);
+    return Glide$$1;
+  }(Glide);
+
+  return Glide$1;
+
+})));
+Илюша, [17.12.2023 17:06]
+let curtainApp = new Vue({
+  el: "#curtain-app",
+  data: {
+    category_name: "羅馬簾",
+    category_price: 2879,
+    calc_exp: 測量教學：請點我\n\n價格說明：\n此價格不含安裝費,
+    buy_exp: 1. 消費者如果單買布簾可以直接按購物車結帳。\n按"下一步"，繼續選擇相關商品服務。,
+    product_textures: [
+      {
+        name: "平光百葉簾　",
+        price: 1640,
+        photoPreviewUrl:
+          "https://www.msbt.com.tw/images/product/VenetianBlind/Wood/photo-cover_1000.jpg",
+        photoDetailUrl:
+          "https://www.msbt.com.tw/images/product/VenetianBlind/Wood/W50F/photo-show-p4BTeN.jpg"
+      },
+      {
+        name: "鋼琴百葉簾",
+        price: 2750,
+        photoPreviewUrl:
+          "https://www.msbt.com.tw/images/product/VenetianBlind/GlossyWood/photo-cover_1000.jpg",
+        photoDetailUrl:
+          "https://www.msbt.com.tw/images/product/VenetianBlind/Wood/W50F/photo-show-zRDzEh.jpg"
+      },
+      {
+        name: "消光百葉簾　",
+        price: 2190,
+        photoPreviewUrl:
+          "https://www.msbt.com.tw/images/product/VenetianBlind/FrostedWood/photo-cover_1000.jpg",
+        photoDetailUrl:
+          "https://www.msbt.com.tw/images/product/VenetianBlind/FrostedWood/SM50FW/photo-11.jpg"
+      },
+      {
+        name: "鋼琴百葉簾",
+        price: 2750,
+        photoPreviewUrl:
+          "https://www.msbt.com.tw/images/product/VenetianBlind/GlossyWood/photo-cover_1000.jpg",
+        photoDetailUrl:
+          "https://www.msbt.com.tw/images/product/VenetianBlind/Wood/W50F/photo-show-zRDzEh.jpg"
+      },
+      {
+        name: "消光百葉簾　",
+        price: 2190,
+        photoPreviewUrl:
+          "https://www.msbt.com.tw/images/product/VenetianBlind/FrostedWood/photo-cover_1000.jpg",
+        photoDetailUrl:
+          "https://www.msbt.com.tw/images/product/VenetianBlind/FrostedWood/SM50FW/photo-11.jpg"
+      },
+      {
+        name: "平光百葉簾　",
+        price: 1640,
+        photoPreviewUrl:
+          "https://www.msbt.com.tw/images/product/VenetianBlind/Wood/photo-cover_1000.jpg",
+        photoDetailUrl:
+          "https://www.msbt.com.tw/images/product/VenetianBlind/Wood/W50F/photo-show-p4BTeN.jpg"
+      },
+      {
+        name: "消光百葉簾　",
+        price: 2190,
+        photoPreviewUrl:
+          "https://www.msbt.com.tw/images/product/VenetianBlind/FrostedWood/photo-cover_1000.jpg",
+        photoDetailUrl:
+          "https://www.msbt.com.tw/images/product/VenetianBlind/FrostedWood/SM50FW/photo-11.jpg"
+      },
+      {
+        name: "平光百葉簾　",
+        price: 1640,
+        photoPreviewUrl:
+          "https://www.msbt.com.tw/images/product/VenetianBlind/Wood/photo-cover_1000.jpg",
+        photoDetailUrl:
+          "https://www.msbt.com.tw/images/product/VenetianBlind/Wood/W50F/photo-show-p4BTeN.jpg"
+      },
+      {
+        name: "鋼琴百葉簾",
+        price: 2750,
+        photoPreviewUrl:
+          "https://www.msbt.com.tw/images/product/VenetianBlind/GlossyWood/photo-cover_1000.jpg",
+        photoDetailUrl:
+          "https://www.msbt.com.tw/images/product/VenetianBlind/Wood/W50F/photo-show-zRDzEh.jpg"
+      },
+      {
+        name: "消光百葉簾　",
+        price: 2190,
+        photoPreviewUrl:
+          "https://www.msbt.com.tw/images/product/VenetianBlind/FrostedWood/photo-cover_1000.jpg",
+        photoDetailUrl:
+          "https://www.msbt.com.tw/images/product/VenetianBlind/FrostedWood/SM50FW/photo-11.jpg"
+      },
+      {
+        name: "鋼琴百葉簾",
+        price: 2750,
+        photoPreviewUrl:
+          "https://www.msbt.com.tw/images/product/VenetianBlind/GlossyWood/photo-cover_1000.jpg",
+        photoDetailUrl:
+          "https://www.msbt.com.tw/images/product/VenetianBlind/Wood/W50F/photo-show-zRDzEh.jpg"
+      },
+      {
+        name: "消光百葉簾　",
+        price: 2190,
+        photoPreviewUrl:
+          "https://www.msbt.com.tw/images/product/VenetianBlind/FrostedWood/photo-cover_1000.jpg",
+        photoDetailUrl:
+          "https://www.msbt.com.tw/images/product/VenetianBlind/FrostedWood/SM50FW/photo-11.jpg"
+      },
+      {
+        name: "鋼琴百葉簾",
+        price: 2750,
+        photoPreviewUrl:
+          "https://www.msbt.com.tw/images/product/VenetianBlind/GlossyWood/photo-cover_1000.jpg",
+        photoDetailUrl:
+
+Илюша, [17.12.2023 17:06]
+/*  clock */
+const hours = document.querySelector('.hours');
+const minutes = document.querySelector('.minutes');
+const seconds = document.querySelector('.seconds');
+
+/*  play button */
+const play = document.querySelector('.play');
+const pause = document.querySelector('.pause');
+const playBtn = document.querySelector('.circle__btn');
+const wave1 = document.querySelector('.circle__back-1');
+const wave2 = document.querySelector('.circle__back-2');
+
+/*  rate slider */
+const container = document.querySelector('.slider__box');
+const btn = document.querySelector('.slider__btn');
+const color = document.querySelector('.slider__color');
+const tooltip = document.querySelector('.slider__tooltip');
+
+clock = () => {
+  let today = new Date();
+  let h = (today.getHours() % 12) + today.getMinutes() / 59; // 22 % 12 = 10pm
+  let m = today.getMinutes(); // 0 - 59
+  let s = today.getSeconds(); // 0 - 59
+
+  h *= 30; // 12 * 30 = 360deg
+  m *= 6;
+  s *= 6; // 60 * 6 = 360deg
+
+  rotation(hours, h);
+  rotation(minutes, m);
+  rotation(seconds, s);
+
+  // call every second
+  setTimeout(clock, 500);
+}
+
+rotation = (target, val) => {
+  target.style.transform =  rotate(${val}deg);
+}
+
+window.onload = clock();
+
+dragElement = (target, btn) => {
+  target.addEventListener('mousedown', (e) => {
+      onMouseMove(e);
+      window.addEventListener('mousemove', onMouseMove);
+      window.addEventListener('mouseup', onMouseUp);
+  });
+
+  onMouseMove = (e) => {
+      e.preventDefault();
+      let targetRect = target.getBoundingClientRect();
+      let x = e.pageX - targetRect.left + 10;
+      if (x > targetRect.width) { x = targetRect.width};
+      if (x < 0){ x = 0};
+      btn.x = x - 10;
+      btn.style.left = btn.x + 'px';
+
+      // get the position of the button inside the container (%)
+      let percentPosition = (btn.x + 10) / targetRect.width * 100;
+      
+      // color width = position of button (%)
+      color.style.width = percentPosition + "%";
+
+      // move the tooltip when button moves, and show the tooltip
+      tooltip.style.left = btn.x - 5 + 'px';
+      tooltip.style.opacity = 1;
+
+      // show the percentage in the tooltip
+      tooltip.textContent = Math.round(percentPosition) + '%';
+  };
+
+  onMouseUp  = (e) => {
+      window.removeEventListener('mousemove', onMouseMove);
+      tooltip.style.opacity = 0;
+
+      btn.addEventListener('mouseover', function() {
+        tooltip.style.opacity = 1;
+      });
+      
+      btn.addEventListener('mouseout', function() {
+        tooltip.style.opacity = 0;
+      });
+  };
+};
+
+dragElement(container, btn);
+
+/*  play button  */
+playBtn.addEventListener('click', function(e) {
+  e.preventDefault();
+  pause.classList.toggle('visibility');
+  play.classList.toggle('visibility');
+  playBtn.classList.toggle('shadow');
+  wave1.classList.toggle('paused');
+  wave2.classList.toggle('paused');
+});
+
+Илюша, [17.12.2023 17:06]
+/
+     * Cache initial settings before overwritting.
+     *
+     * @type {Object}
+     */
+    var defaults = _extends({}, settings);
+
+    var Breakpoints = {
+      /
+       * Matches settings for currectly matching media breakpoint.
+       *
+       * @param {Object} points
+       * @returns {Object}
+       */
+      match: function match(points) {
+        if (typeof window.matchMedia !== 'undefined') {
+          for (var point in points) {
+            if (points.hasOwnProperty(point)) {
+              if (window.matchMedia('(max-width: ' + point + 'px)').matches) {
+                return points[point];
+              }
+            }
+          }
+        }
+
+        return defaults;
+      }
+    };
+
+    /
+     * Overwrite instance settings with currently matching breakpoint settings.
+     * This happens right after component initialization.
+     */
+    _extends(settings, Breakpoints.match(points));
+
+    /
+     * Update glide with settings of matched brekpoint:
+     * - window resize to update slider
+     */
+    Binder.on('resize', window, throttle(function () {
+      Glide.settings = mergeOptions(settings, Breakpoints.match(points));
+    }, Glide.settings.throttle));
+
+    /
+     * Resort and update default settings:
+     * - on reinit via API, so breakpoint matching will be performed with options
+     */
+    Events.on('update', function () {
+      points = sortBreakpoints(points);
+
+      defaults = _extends({}, settings);
+    });
+
+    /
+     * Unbind resize listener:
+     * - on destroying, to bring markup to its initial state
+     */
+    Events.on('destroy', function () {
+      Binder.off('resize', window);
+    });
+
+    return Breakpoints;
+  }
+
+  var COMPONENTS = {
+    // Required
+    Html: Html,
+    Translate: Translate,
+    Transition: Transition,
+    Direction: Direction,
+    Peek: Peek,
+    Sizes: Sizes,
+    Gaps: Gaps,
+    Move: Move,
+    Clones: Clones,
+    Resize: Resize,
+    Build: Build,
+    Run: Run,
+
+    // Optional
+    Swipe: Swipe,
+    Images: Images,
+    Anchors: Anchors,
+    Controls: Controls,
+    Keyboard: Keyboard,
+    Autoplay: Autoplay,
+    Breakpoints: Breakpoints
+  };
+
+  var Glide$1 = function (_Core) {
+    inherits(Glide$$1, _Core);
+
+    function Glide$$1() {
+      classCallCheck(this, Glide$$1);
+      return possibleConstructorReturn(this, (Glide$$1.proto  Object.getPrototypeOf(Glide$$1)).apply(this, arguments));
+    }
+
+    createClass(Glide$$1, [{
+      key: 'mount',
+      value: function mount() {
+        var extensions = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : {};
+
+        return get(Glide$$1.prototype.__proto__  Object.getPrototypeOf(Glide$$1.prototype), 'mount', this).call(this, _extends({}, COMPONENTS, extensions));
+      }
+    }]);
+    return Glide$$1;
+  }(Glide);
+
+  return Glide$1;
+
+})));
+"https://www.msbt.com.tw/images/product/VenetianBlind/Wood/W50F/photo-show-zRDzEh.jpg"
+      },
+      {
+        name: "消光百葉簾 ",
+        price: 2190,
+        photoPreviewUrl:
+          "https://www.msbt.com.tw/images/product/VenetianBlind/FrostedWood/photo-cover_1000.jpg",
+        photoDetailUrl:
+          "https://www.msbt.com.tw/images/product/VenetianBlind/FrostedWood/SM50FW/photo-11.jpg"
+      }
+    ],
+    product_accessories: [
+      {
+        name: "消光百葉簾 ",
+        price: 2190,
+        photoPreviewUrl:
+          "https://www.msbt.com.tw/images/product/VenetianBlind/FrostedWood/photo-cover_1000.jpg",
+        photoDetailUrl:
+          "https://www.msbt.com.tw/images/product/VenetianBlind/FrostedWood/SM50FW/photo-11.jpg"
+      },
+      {
+        name: "鋼琴百葉簾",
+        price: 2750,
+        photoPreviewUrl:
+          "https://www.msbt.com.tw/images/product/VenetianBlind/GlossyWood/photo-cover_1000.jpg",
+        photoDetailUrl:
+          "https://www.msbt.com.tw/images/product/VenetianBlind/Wood/W50F/photo-show-zRDzEh.jpg"
+      },
+      {
+        name: "消光百葉簾 ",
+        price: 2190,
+        photoPreviewUrl:
+          "https://www.msbt.com.tw/images/product/VenetianBlind/FrostedWood/photo-cover_1000.jpg",
+        photoDetailUrl:
+          "https://www.msbt.com.tw/images/product/VenetianBlind/FrostedWood/SM50FW/photo-11.jpg"
+      }
+    ],
+    selected_product_texture: {
+      name: "消光百葉簾 ",
+      price: 2190,
+      photoPreviewUrl:
+        "https://www.msbt.com.tw/images/product/VenetianBlind/FrostedWood/photo-cover_1000.jpg",
+      photoDetailUrl:
+        "https://www.msbt.com.tw/images/product/VenetianBlind/FrostedWood/SM50FW/photo-11.jpg"
+    }
+  },
+  methods: {
+    updateDetailPhoto(pd) {
+      this.selected_product_texture = pd;
+    }
+  }
+});
